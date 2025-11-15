@@ -15,7 +15,9 @@ import {
   rewriteUnderscoreTags,
 } from "./common";
 
-const WD_TARGET_SIZE = 448;
+import { TAGGER_SESSION_OPTIONS } from "./sessionOptions";
+
+const WD_TARGET_SIZE = 384;
 
 export interface WDTaggerModelInfo {
   modelname: string;
@@ -79,12 +81,28 @@ function parseCsv(text: string): Record<string, string>[] {
   }
 
   const headers = parseCsvLine(lines[0]);
-  for (const line of lines.slice(1)) {
+  
+  // detect if this is jtp pilot2 format (index,tag_name without header)
+  const isSimpleFormat = headers.length === 2 && !headers.includes("name");
+  
+  for (const line of (isSimpleFormat ? lines : lines.slice(1))) { // otherwise its getting an index too high
     const values = parseCsvLine(line);
     const row: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      row[header] = values[index] || "";
-    });
+    
+    if (isSimpleFormat) {
+      // first column is index, second is tag name, 
+      // category is substituted with general (0) category as placeholder, 
+      // count is substituted with count 100 placeholder
+      row["tag_id"] = values[0] || "";
+      row["name"] = values[1] || "";
+      row["category"] = "0"; // placeholder
+      row["count"] = "100"; // placeholder
+    } else {
+      // Standard wd format with headers
+      headers.forEach((header, index) => {
+        row[header] = values[index] || "";
+      });
+    }
     data.push(row);
   }
 
@@ -238,12 +256,19 @@ export function processResultsWD(
   confidences: Float32Array,
   threshold: number,
 ): Results {
+  // DEBUG
+  console.log("Confidences:", confidences);
+  console.log("TagsData:", session.tagsData);
+
   const tagResults: { name: string; confidence: number }[] = [];
   const numRatings = session.modelInfo.numberofratings;
   let rating: { name: string; confidence: number } | undefined;
   for (const [i, tagData] of session.tagsData.slice(0, numRatings).entries()) {
     const name = processWDTagName(tagData);
     const confidence = confidences[i];
+    // DEBUG
+    console.log(`Rating Tag Index: ${i}, Name: ${name}, Confidence: ${confidence}`);
+
     if (confidence === undefined) {
       console.warn(`Missing confidence for rating tag index ${i}`);
       continue;
@@ -258,6 +283,10 @@ export function processResultsWD(
   for (const [i, tagData] of session.tagsData.slice(numRatings).entries()) {
     const tags = processWDTagData(tagData);
     const confidence = confidences[i + numRatings];
+    // DEBUG
+    if (confidence >= 0.3) {
+      console.log(`General Tag Index: ${i + numRatings}, Names: ${tags}, Confidence: ${confidence}`);
+    }
     if (confidence === undefined) {
       console.warn(`Missing confidence for general tag index ${i}`);
       continue;
@@ -287,6 +316,7 @@ export async function loadModelWD(
   tagsData = parseCsv(await (await tags.getFile()).text());
   const modelSession = await InferenceSession.create(
     await modelData.arrayBuffer(),
+    TAGGER_SESSION_OPTIONS,
   );
   return {
     targetSize: WD_TARGET_SIZE,
